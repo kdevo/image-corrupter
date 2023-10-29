@@ -1,3 +1,3 @@
-module github.com/r00tman/corrupter
+module github.com/kdevo/image-corrupter
 
-go 1.12
+go 1.21
