@@ -19,7 +19,7 @@ func check(e error) {
 	}
 }
 
-// force x to stay in [0, b) range. x is assumed to be in [-b,2*b) range
+// wrap forces x to stay in [0, b) range. x is assumed to be in [-b,2*b) range
 func wrap(x, b int) int {
 	if x < 0 {
 		return x + b
@@ -30,7 +30,7 @@ func wrap(x, b int) int {
 	return x
 }
 
-// get normally distributed (rounded to int) value with the specified std. dev.
+// offset gets normally distributed (rounded to int) value with the specified std. dev.
 func offset(stddev float64) int {
 	sample := seededRand.NormFloat64() * stddev
 	return int(sample)
@@ -75,7 +75,7 @@ func main() {
 	}
 
 	// flag.Args() contain all non-option arguments, i.e., our input and output files
-	reader := (*os.File)(nil)
+	var reader *os.File
 	if len(flag.Args()) == 0 {
 		flag.Usage()
 		os.Exit(2)
@@ -83,7 +83,7 @@ func main() {
 		// stdin/stdout processing
 		reader = os.Stdin
 	} else if len(flag.Args()) == 2 {
-		err := error(nil)
+		var err error
 		reader, err = os.Open(flag.Args()[0])
 		check(err)
 	} else {
@@ -95,116 +95,114 @@ func main() {
 	reader.Close()
 
 	// trying to obtain raw pointers to color data, since .At(), .Set() are very slow
-	m_raw_stride, m_raw_pix := 0, []uint8(nil)
+	mRawStride, mRawPix := 0, []uint8(nil)
 
-	switch m.(type) {
+	switch m := m.(type) {
+	case *image.NRGBA:
+		mRawStride = m.Stride
+		mRawPix = m.Pix
+	case *image.RGBA:
+		mRawStride = m.Stride
+		mRawPix = m.Pix
 	default:
 		log.Fatal("unknown image type")
-	case *image.NRGBA:
-		m_raw := m.(*image.NRGBA)
-		m_raw_stride = m_raw.Stride
-		m_raw_pix = m_raw.Pix
-	case *image.RGBA:
-		m_raw := m.(*image.RGBA)
-		m_raw_stride = m_raw.Stride
-		m_raw_pix = m_raw.Pix
 	}
 
 	b := m.Bounds()
 
 	// first stage is dissolve+block corruption
-	new_img := image.NewNRGBA(b)
-	line_off := 0
+	newImg := image.NewNRGBA(b)
+	lineOff := 0
 	stride := 0.
 	yset := 0
-	MAG := *magPtr
-	BHEIGHT := *blockHeightPtr
-	BOFFSET := *blockOffsetPtr
-	STRIDE_MAG := *strideMagPtr
+	mag := *magPtr
+	bHeight := *blockHeightPtr
+	bOffset := *blockOffsetPtr
+	strideMag := *strideMagPtr
 	for y := 0; y < b.Max.Y; y++ {
 		for x := 0; x < b.Max.X; x++ {
-			// Every BHEIGHT lines in average a new distorted block begins
-			if seededRand.Intn(BHEIGHT*b.Max.X) == 0 {
-				line_off = offset(BOFFSET)
-				stride = seededRand.NormFloat64() * STRIDE_MAG
+			// Every bHeight lines in average a new distorted block begins
+			if seededRand.Intn(bHeight*b.Max.X) == 0 {
+				lineOff = offset(bOffset)
+				stride = seededRand.NormFloat64() * strideMag
 				yset = y
 			}
 			// at the line where the block has begun, we don't want to offset the image
-			// so stride_off is 0 on the block's line
-			stride_off := int(stride * float64(y-yset))
+			// so strideOff is 0 on the block's line
+			strideOff := int(stride * float64(y-yset))
 
 			// offset is composed of the blur, block offset, and skew offset (stride)
-			offx := offset(MAG) + line_off + stride_off
-			offy := offset(MAG)
+			offx := offset(mag) + lineOff + strideOff
+			offy := offset(mag)
 
 			// copy the corresponding pixel (4 bytes) to the new image
-			src_idx := m_raw_stride*wrap(y+offy, b.Max.Y) + 4*wrap(x+offx, b.Max.X)
-			dst_idx := new_img.Stride*y + 4*x
+			srcIdx := mRawStride*wrap(y+offy, b.Max.Y) + 4*wrap(x+offx, b.Max.X)
+			dstIdx := newImg.Stride*y + 4*x
 
-			copy(new_img.Pix[dst_idx:dst_idx+4], m_raw_pix[src_idx:src_idx+4])
+			copy(newImg.Pix[dstIdx:dstIdx+4], mRawPix[srcIdx:srcIdx+4])
 		}
 	}
 
 	// second stage is adding per-channel scan inconsistency and brightening
-	new_img1 := image.NewNRGBA(b)
+	newImg1 := image.NewNRGBA(b)
 
 	lr, lg, lb := *lrPtr, *lgPtr, *lbPtr
-	LAG := *lagPtr
-	ADD := uint8(*addPtr)
-	STD_OFFSET := *stdOffsetPtr
+	lag := *lagPtr
+	add := uint8(*addPtr)
+	stdOffset := *stdOffsetPtr
 	for y := 0; y < b.Max.Y; y++ {
 		for x := 0; x < b.Max.X; x++ {
-			lr += seededRand.NormFloat64() * LAG
-			lg += seededRand.NormFloat64() * LAG
-			lb += seededRand.NormFloat64() * LAG
-			offx := offset(STD_OFFSET)
+			lr += seededRand.NormFloat64() * lag
+			lg += seededRand.NormFloat64() * lag
+			lb += seededRand.NormFloat64() * lag
+			offx := offset(stdOffset)
 
 			// obtain source pixel base offsets. red/blue border is also smoothed by offx
-			ra_idx := new_img.Stride*y + 4*wrap(x+int(lr)-offx, b.Max.X)
-			g_idx := new_img.Stride*y + 4*wrap(x+int(lg), b.Max.X)
-			b_idx := new_img.Stride*y + 4*wrap(x+int(lb)+offx, b.Max.X)
+			raIdx := newImg.Stride*y + 4*wrap(x+int(lr)-offx, b.Max.X)
+			gIdx := newImg.Stride*y + 4*wrap(x+int(lg), b.Max.X)
+			bIdx := newImg.Stride*y + 4*wrap(x+int(lb)+offx, b.Max.X)
 
 			// pixels are stored in (r, g, b, a) order in memory
-			r := new_img.Pix[ra_idx]
-			a := new_img.Pix[ra_idx+3]
-			g := new_img.Pix[g_idx+1]
-			b := new_img.Pix[b_idx+2]
+			r := newImg.Pix[raIdx]
+			a := newImg.Pix[raIdx+3]
+			g := newImg.Pix[gIdx+1]
+			b := newImg.Pix[bIdx+2]
 
-			r, g, b = brighten(r, ADD), brighten(g, ADD), brighten(b, ADD)
+			r, g, b = brighten(r, add), brighten(g, add), brighten(b, add)
 
 			// copy the corresponding pixel (4 bytes) to the new image
-			dst_idx := new_img1.Stride*y + 4*x
-			copy(new_img1.Pix[dst_idx:dst_idx+4], []uint8{r, g, b, a})
+			dstIdx := newImg1.Stride*y + 4*x
+			copy(newImg1.Pix[dstIdx:dstIdx+4], []uint8{r, g, b, a})
 		}
 	}
 
 	// third stage is to add chromatic abberation+chromatic trails
 	// (trails happen because we're changing the same image we process)
-	MEAN_ABBER := *meanAbberPtr
-	STD_ABBER := *stdAbberPtr
+	meanAbber := *meanAbberPtr
+	stdAbber := *stdAbberPtr
 	for y := 0; y < b.Max.Y; y++ {
 		for x := 0; x < b.Max.X; x++ {
-			offx := MEAN_ABBER + offset(STD_ABBER) // lower offset arg = longer trails
+			offx := meanAbber + offset(stdAbber) // lower offset arg = longer trails
 
 			// obtain source pixel base offsets. only red and blue are distorted
-			ra_idx := new_img1.Stride*y + 4*wrap(x+offx, b.Max.X)
-			g_idx := new_img1.Stride*y + 4*x
-			b_idx := new_img1.Stride*y + 4*wrap(x-offx, b.Max.X)
+			raIdx := newImg1.Stride*y + 4*wrap(x+offx, b.Max.X)
+			gIdx := newImg1.Stride*y + 4*x
+			bIdx := newImg1.Stride*y + 4*wrap(x-offx, b.Max.X)
 
 			// pixels are stored in (r, g, b, a) order in memory
-			r := new_img1.Pix[ra_idx]
-			a := new_img1.Pix[ra_idx+3]
-			g := new_img1.Pix[g_idx+1]
-			b := new_img1.Pix[b_idx+2]
+			r := newImg1.Pix[raIdx]
+			a := newImg1.Pix[raIdx+3]
+			g := newImg1.Pix[gIdx+1]
+			b := newImg1.Pix[bIdx+2]
 
 			// copy the corresponding pixel (4 bytes) to the SAME image. this gets us nice colorful trails
-			dst_idx := new_img1.Stride*y + 4*x
-			copy(new_img1.Pix[dst_idx:dst_idx+4], []uint8{r, g, b, a})
+			dstIdx := newImg1.Stride*y + 4*x
+			copy(newImg1.Pix[dstIdx:dstIdx+4], []uint8{r, g, b, a})
 		}
 	}
 
 	// write the image
-	writer := (*os.File)(nil)
+	var writer *os.File
 	if flag.Args()[0] == "-" {
 		// stdin/stdout processing
 		writer = os.Stdout
@@ -213,6 +211,6 @@ func main() {
 		check(err)
 	}
 	e := png.Encoder{CompressionLevel: png.NoCompression}
-	e.Encode(writer, new_img1)
+	e.Encode(writer, newImg1)
 	writer.Close()
 }
